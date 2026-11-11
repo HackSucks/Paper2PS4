@@ -4,7 +4,7 @@ Turns a Wallpaper Engine project into a PS4 installable FPKG theme.
 
 The simple way to use it: point it at the project folder and wait.
 
-    paper2ps4 ~/wallpapers/projects/2521462823 -o out/niko.fpkg
+    paper2ps4 ~/wallpapers/projects/2521462823 -o out/niko.pkg
 
 The folder is expected to hold what Wallpaper Engine downloaded:
 
@@ -13,13 +13,20 @@ The folder is expected to hold what Wallpaper Engine downloaded:
       preview.jpg      the author's preview image (the workshop thumbnail)
       scene.pkg        the scene itself
 
+The output extension is the caller's choice: .pkg and .fpkg are the same
+thing, and some installers only accept one of them.
+
+The Windows helper tools (orbis-pub-cmd.exe, ps4_at9tool.exe) are looked for
+in the folders given with --tools, in the PAPER2PS4_TOOLS environment
+variable and on PATH. Nothing is hardcoded.
+
 Pipeline:
     1. Unpack scene.pkg (PKGV/PKGM container).
     2. Render the scene: the objects are composited the way Wallpaper Engine
        draws them, so the theme looks like the wallpaper.
     3. Build the theme assets: theme.xml, param.sfo, icon0.png, pic1.png,
        preview.png, plus the menu music (ATRAC9) when the scene has audio.
-    4. Package with orbis-pub-cmd.exe -> .fpkg.
+    4. Package with orbis-pub-cmd.exe.
 
 Shaders and particles are the one thing that cannot be reproduced: a PS4
 theme cannot run custom HLSL/GLSL. Their output is already baked into the
@@ -41,6 +48,7 @@ from . import overrides as overrides_mod
 from . import pkg as pkg_mod
 from . import scene as scene_mod
 from . import theme as theme_mod
+from . import tools
 from . import unpack
 from . import verify as verify_mod
 from . import video
@@ -114,10 +122,15 @@ def convert(project_dir: Path, out_fpkg: Path, *,
             icons_dir: Path | None = None,
             sfx_dir: Path | None = None,
             ) -> Path:
-    """Run the whole conversion. Returns the path to the produced .fpkg."""
+    """Run the whole conversion. Returns the path to the produced package."""
     project_dir = project_dir.resolve()
     if not project_dir.is_dir():
         raise FileNotFoundError(f"project folder not found: {project_dir}")
+
+    out_fpkg = Path(out_fpkg)
+    if not out_fpkg.suffix:
+        # No extension given: .pkg is what the PS4's own installer takes.
+        out_fpkg = out_fpkg.with_suffix(".pkg")
 
     scene_pkg = find_scene_pkg(project_dir)
     metadata = load_project_metadata(project_dir)
@@ -130,8 +143,9 @@ def convert(project_dir: Path, out_fpkg: Path, *,
         clean = clean.ljust(16, "0")
         content_id = f"{constants.PKG_DEFAULTS['content_prefix']}-{title_id}_00-{clean}"
 
-    # Working directory next to the output.
-    work = out_fpkg.with_suffix("")
+    # Working directory next to the output. It carries the full output name
+    # so two outputs in the same folder do not share it.
+    work = out_fpkg.parent / f"{out_fpkg.name}.work"
     work_src = work / "src"
     work_assets = work / "assets"
     work_assets.mkdir(parents=True, exist_ok=True)
@@ -250,8 +264,10 @@ def convert(project_dir: Path, out_fpkg: Path, *,
     print("[5/5] packaging ...")
     if not pkg_mod.tools_available():
         raise RuntimeError(
-            "orbis-pub-cmd.exe not found. Put it (with ext/sc.exe, ext/di.exe "
-            "and ext/libatrac9.dll) under /mnt/windows2 or on PATH."
+            "orbis-pub-cmd.exe not found: "
+            + tools.describe_search(constants.ORBIS_PUB_CMD_NAMES) + ". "
+            "It needs its ext/ folder (sc.exe, di.exe, libatrac9.dll) next "
+            "to it."
         )
     meta = pkg_mod.PackageMeta(
         title=title,
@@ -262,7 +278,11 @@ def convert(project_dir: Path, out_fpkg: Path, *,
     )
     built = pkg_mod.build_package(work, content_dir, meta)
 
+    # The tool always writes a .pkg; the name the user asked for is what
+    # they get, whether that is .pkg or .fpkg.
     out_fpkg.parent.mkdir(parents=True, exist_ok=True)
+    if out_fpkg.exists():
+        out_fpkg.unlink()
     shutil.move(str(built), str(out_fpkg))
     print(f"[done] {out_fpkg} ({out_fpkg.stat().st_size / 1048576:.1f} MB)")
 
@@ -287,7 +307,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="the Wallpaper Engine project folder "
                          "(holds scene.pkg, project.json and the preview)")
     ap.add_argument("-o", "--out", type=Path, required=True,
-                    help="output .fpkg path")
+                    help="output path. The extension is yours to choose: "
+                         ".pkg and .fpkg are the same thing, and some "
+                         "installers only accept one of them")
     ap.add_argument("-t", "--title", default=None,
                     help="theme title (default: the title in project.json)")
     ap.add_argument("--title-id", default=constants.PKG_DEFAULTS["title_id"],
@@ -320,6 +342,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "(se_decide, se_cursor, se_cancel)")
     ap.add_argument("--keep-work", action="store_true",
                     help="keep the intermediate working folder")
+    ap.add_argument("--tools", type=Path, action="append", default=None,
+                    metavar="DIR",
+                    help="folder holding orbis-pub-cmd.exe (and its ext/ "
+                         "subfolder) and ps4_at9tool.exe. May be given more "
+                         "than once. They are also looked for on PATH, and "
+                         f"the {tools.TOOLS_ENV_VAR} environment variable "
+                         "adds folders too")
     ap.add_argument("--verify", action="store_true",
                     help="check the finished package and report what is inside")
     return ap
@@ -328,6 +357,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
+
+    # The tool folders have to be known before anything looks for the tools.
+    tools.set_tool_dirs(args.tools or [])
 
     try:
         out = convert(

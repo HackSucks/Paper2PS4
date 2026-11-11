@@ -9,7 +9,7 @@ a `.fpkg` you can install on a PS4.
 git clone <this repo> && cd paper2ps4
 pip install -r requirements.txt
 
-python3 -m paper2ps4 ~/wallpapers/projects/2521462823 -o out/niko.fpkg
+python3 -m paper2ps4 ~/wallpapers/projects/2521462823 -o out/niko.pkg
 ```
 
 That is the whole thing. The project folder holds:
@@ -31,11 +31,40 @@ and the result is an installable theme.
 - The proprietary Sony helpers, which are **not** bundled (they are in the
   "PS4 Fake PKG Tools" download and Sony's ATRAC9 SDK):
   - `orbis-pub-cmd.exe` — packaging (required)
-  - `ext/sc.exe`, `ext/di.exe`, `ext/libatrac9.dll` — its dependencies
+  - `ext/sc.exe`, `ext/di.exe`, `ext/libatrac9.dll` — its dependencies, in an
+    `ext/` folder next to it
   - `ps4_at9tool.exe` — menu music to ATRAC9 (optional; without it the theme
     is silent)
 
-They are looked for in `/mnt/windows2` and on PATH.
+### Where the helpers are looked for
+
+Nothing is hardcoded. The tools are searched for in this order:
+
+1. the folders given with `--tools` (it can be given more than once)
+2. the folders in the `PAPER2PS4_TOOLS` environment variable
+   (`:`-separated on Linux, `;` on Windows)
+3. `PATH`
+
+```bash
+# the folder holding orbis-pub-cmd.exe and its ext/ subfolder
+python3 -m paper2ps4 ~/projects/2521462823 -o out.pkg --tools /opt/ps4-tools
+
+# or once, for the whole session
+export PAPER2PS4_TOOLS=/opt/ps4-tools
+```
+
+## The output file
+
+`.pkg` and `.fpkg` are the same thing: an installable PS4 package. The
+extension you ask for is the one you get, because some installers only
+accept one of them.
+
+```bash
+python3 -m paper2ps4 ~/projects/2521462823 -o out/theme.pkg    # for the PS4's own installer
+python3 -m paper2ps4 ~/projects/2521462823 -o out/theme.fpkg   # for anything that prefers it
+```
+
+With no extension, `.pkg` is used.
 
 ## What it does
 
@@ -64,7 +93,7 @@ Wallpaper Engine's own exported PNGs.
 ## Options
 
 ```
-python3 -m paper2ps4 <project> -o out.fpkg [options]
+python3 -m paper2ps4 <project> -o out.pkg [options]
 
   -t, --title TEXT        theme title (default: the title in project.json)
   --title-id ID           title ID (default: CUSA00000)
@@ -79,6 +108,7 @@ python3 -m paper2ps4 <project> -o out.fpkg [options]
   --no-music              build the theme without music
   --icons DIR             folder with system icon replacements
   --sfx DIR               folder with sound effect replacements
+  --tools DIR             folder holding orbis-pub-cmd.exe and ps4_at9tool.exe
   --keep-work             keep the intermediate working folder
   --verify                check the finished package and list what is inside
 ```

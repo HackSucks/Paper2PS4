@@ -88,8 +88,9 @@ def convert_to_at9(wav_path: Path, dest: Path, bitrate: int = constants.AT9_BITR
     tool = find_at9tool()
     if tool is None:
         raise MediaError(
-            "ps4_at9tool.exe not found (looked in /mnt/windows2 and PATH). "
-            "Install it to convert music to .at9, or skip music with --no-music."
+            "ps4_at9tool.exe not found: "
+            + tools.describe_search(constants.AT9_TOOL_NAMES) + ". "
+            "Install it to convert the music, or skip it with --no-music."
         )
 
     dest.parent.mkdir(parents=True, exist_ok=True)

@@ -131,11 +131,10 @@ AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus", ".wma", 
 ORBIS_PUB_CMD_NAMES = ("orbis-pub-cmd.exe",)
 AT9_TOOL_NAMES = ("ps4_at9tool.exe", "at9tool.exe")
 
-# Where the Windows helper tools live. On Linux they run under wine.
-TOOL_SEARCH_DIRS = (
-    Path("/mnt/windows2"),
-    Path("/mnt/windows2/ext"),
-)
+#: The file extensions a built package may have. Both are the same thing:
+#: an installable PS4 package. Some installers only accept .pkg, others
+#: expect .fpkg, so whatever the user asks for is what they get.
+PACKAGE_EXTENSIONS = (".pkg", ".fpkg")
 
 
 def dds_bytes_for(width: int, height: int) -> int:

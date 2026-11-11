@@ -1,19 +1,61 @@
 """Tool resolution and launching.
 
-The PS4 packaging / conversion helpers are Windows .exe binaries. On Linux they
-run through wine; on Windows they launch directly. This module resolves them
-from a list of candidate directories (default: /mnt/windows2 and friends) and
-builds the right subprocess command for the current platform.
+The PS4 packaging helpers are Windows .exe binaries. On Linux they run
+through wine; on Windows they launch directly.
+
+Where they are looked for, in order:
+
+  1. the directories given with `--tools` (or the PAPER2PS4_TOOLS
+     environment variable)
+  2. PATH
+
+Nothing is hardcoded: a machine with the tools in /opt/ps4-tools, in a
+Windows drive or anywhere else just needs the folder pointed at, or the
+folder added to PATH.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from . import constants
+#: Extra folders to look in, set by --tools or PAPER2PS4_TOOLS.
+_extra_dirs: list[Path] = []
+
+#: The environment variable that adds folders to the search.
+TOOLS_ENV_VAR = "PAPER2PS4_TOOLS"
+
+
+def set_tool_dirs(dirs) -> None:
+    """Set the extra folders to search for the tools.
+
+    Replaces whatever was set before. The folders given on the command line
+    come first, then the ones in the environment variable, so an explicit
+    choice always wins over the machine's default.
+    """
+    global _extra_dirs
+    _extra_dirs = []
+
+    for directory in dirs or ():
+        directory = Path(directory)
+        if directory not in _extra_dirs:
+            _extra_dirs.append(directory)
+
+    from_env = os.environ.get(TOOLS_ENV_VAR, "")
+    for part in from_env.split(os.pathsep):
+        part = part.strip()
+        if part:
+            directory = Path(part)
+            if directory not in _extra_dirs:
+                _extra_dirs.append(directory)
+
+
+def tool_dirs() -> list[Path]:
+    """The extra folders currently being searched."""
+    return list(_extra_dirs)
 
 
 def _windows_tool_cmd(exe_path: Path) -> list[str]:
@@ -26,14 +68,12 @@ def _windows_tool_cmd(exe_path: Path) -> list[str]:
     return [str(exe_path)]
 
 
-def find_tool(names: tuple[str, ...], search_dirs: tuple[Path, ...] | None = None) -> Path | None:
+def find_tool(names: tuple[str, ...], search_dirs=None) -> Path | None:
     """Find the first existing tool matching any of `names`.
 
-    Searches, in order:
-      1. each dir in `search_dirs` (default: constants.TOOL_SEARCH_DIRS)
-      2. PATH (for wine-native tools like ffmpeg)
+    Searches the folders given with `--tools` first, then PATH.
     """
-    dirs = search_dirs or constants.TOOL_SEARCH_DIRS
+    dirs = list(search_dirs or []) + tool_dirs()
     for directory in dirs:
         for name in names:
             candidate = directory / name
@@ -46,8 +86,8 @@ def find_tool(names: tuple[str, ...], search_dirs: tuple[Path, ...] | None = Non
     return None
 
 
-def run_tool(exe_path: Path, args: list[str], timeout: int = 600,
-             capture: bool = True) -> subprocess.CompletedProcess:
-    """Launch a Windows tool (through wine on Linux) and return the process."""
-    cmd = _windows_tool_cmd(exe_path) + args
-    return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
+def describe_search(names: tuple[str, ...]) -> str:
+    """A message that says where the tool was looked for."""
+    dirs = tool_dirs()
+    where = ", ".join(str(d) for d in dirs) if dirs else "(no --tools given)"
+    return (f"looked for {', '.join(names)} in {where} and in PATH")

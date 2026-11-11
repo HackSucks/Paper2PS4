@@ -178,8 +178,7 @@ def test_render_matches_the_background_colour() -> None:
 
 def test_build_and_verify() -> None:
     print("\n=== building and verifying a package ===")
-    if not shutil.which("orbis-pub-cmd.exe") and not (
-            Path("/mnt/windows2/orbis-pub-cmd.exe").is_file()):
+    if not tools_available():
         skip("orbis-pub-cmd.exe is not available", "")
         return
 
@@ -296,6 +295,88 @@ def test_flat_override_layout() -> None:
         check("an unknown file is ignored", "something_else" not in names)
 
 
+def test_tool_resolution() -> None:
+    print("\n=== finding the tools ===")
+    import os
+    from paper2ps4 import tools
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "tools"
+        folder.mkdir()
+        fake = folder / "orbis-pub-cmd.exe"
+        fake.write_bytes(b"MZ")
+
+        tools.set_tool_dirs([folder])
+        found = tools.find_tool(("orbis-pub-cmd.exe",))
+        check("a tool in a --tools folder is found",
+              found is not None and found == fake, str(found))
+        check("the folder is listed", folder in tools.tool_dirs())
+
+        tools.set_tool_dirs([])
+        check("the folder is forgotten when it is cleared",
+              folder not in tools.tool_dirs())
+
+        # Nothing is hardcoded: with no folder given, only PATH is searched.
+        saved = os.environ.pop(tools.TOOLS_ENV_VAR, None)
+        try:
+            tools.set_tool_dirs([])
+            message = tools.describe_search(("orbis-pub-cmd.exe",))
+            check("the message says where it looked", "PATH" in message, message)
+            check("no absolute path is baked in",
+                  "/" not in message.replace("(no --tools given)", ""),
+                  message)
+        finally:
+            if saved is not None:
+                os.environ[tools.TOOLS_ENV_VAR] = saved
+            tools.set_tool_dirs([])
+
+        # The environment variable adds folders too.
+        os.environ[tools.TOOLS_ENV_VAR] = str(folder)
+        try:
+            tools.set_tool_dirs([])
+            found = tools.find_tool(("orbis-pub-cmd.exe",))
+            check("the environment variable adds a folder",
+                  found is not None and found == fake, str(found))
+        finally:
+            del os.environ[tools.TOOLS_ENV_VAR]
+            tools.set_tool_dirs([])
+
+
+def test_output_extension() -> None:
+    print("\n=== the output extension ===")
+    from paper2ps4 import cli
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project = build_synthetic_project(Path(tmp) / "project")
+
+        for name, expected in [("theme.pkg", "theme.pkg"),
+                               ("theme.fpkg", "theme.fpkg"),
+                               ("theme", "theme.pkg")]:
+            out = Path(tmp) / name
+            if not tools_available():
+                skip("orbis-pub-cmd.exe is not available", "")
+                return
+            cli.convert(project, out, title="Synthetic Test")
+            check(f"-o {name} produces {expected}",
+                  out.with_name(expected).is_file(),
+                  str(sorted(p.name for p in Path(tmp).glob("theme*"))))
+            # The package has to be readable whatever it is called.
+            ok, problems, contents = verify_mod.verify_theme_package(
+                out.with_name(expected))
+            check(f"{expected} verifies", ok, "; ".join(problems))
+
+
+def tools_available() -> bool:
+    """Is orbis-pub-cmd.exe somewhere the tool can find it?
+
+    The tool itself looks in the --tools folders, in PAPER2PS4_TOOLS and on
+    PATH. The test uses the same rules, so it needs the environment variable
+    set when the tool is not on PATH.
+    """
+    from paper2ps4 import pkg as pkg_mod
+    return pkg_mod.tools_available()
+
+
 def test_budgets() -> None:
     print("\n=== the console budgets ===")
     check("13 frames fit at 1280x720",
@@ -322,6 +403,8 @@ if __name__ == "__main__":
     test_render_matches_the_background_colour()
     test_overrides()
     test_flat_override_layout()
+    test_tool_resolution()
+    test_output_extension()
     test_budgets()
     test_build_and_verify()
     test_real_projects()

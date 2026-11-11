@@ -30,8 +30,6 @@ class PackageError(RuntimeError):
     """Packaging failure carrying the useful part of the tool's output."""
 
 
-ORBIS_CMD = tools.find_tool(constants.ORBIS_PUB_CMD_NAMES)
-
 BUILD_TIMEOUT = 30 * 60
 
 CONTENT_ID_RE = re.compile(r"^[A-Z0-9]{6}-[A-Z0-9]{9}_00-[A-Z0-9]{16}$")
@@ -39,14 +37,26 @@ TITLE_ID_RE = re.compile(r"^[A-Z]{4}[0-9]{5}$")
 PASSCODE_RE = re.compile(r"^[A-Za-z0-9]{32}$")
 
 
+def orbis_cmd() -> Path | None:
+    """Where orbis-pub-cmd.exe is.
+
+    Looked up when it is needed rather than at import time, so the folders
+    given with --tools are already known.
+    """
+    return tools.find_tool(constants.ORBIS_PUB_CMD_NAMES)
+
+
 def tools_available() -> bool:
-    return ORBIS_CMD is not None
+    return orbis_cmd() is not None
 
 
 def _run(label: str, args: list[str], timeout: int = 300) -> str:
-    if ORBIS_CMD is None:
-        raise PackageError("orbis-pub-cmd.exe not found (looked in /mnt/windows2 and PATH).")
-    cmd = tools._windows_tool_cmd(ORBIS_CMD) + args
+    exe = orbis_cmd()
+    if exe is None:
+        raise PackageError(
+            "orbis-pub-cmd.exe not found: "
+            + tools.describe_search(constants.ORBIS_PUB_CMD_NAMES) + ".")
+    cmd = tools._windows_tool_cmd(exe) + args
     started = time.time()
     try:
         proc = subprocess.run(
@@ -198,8 +208,8 @@ def build_package(work_dir: Path, content_dir: Path, meta: PackageMeta) -> Path:
     """
     if not tools_available():
         raise PackageError(
-            f"orbis-pub-cmd.exe not found. Put it in /mnt/windows2 (or PATH)."
-        )
+            "orbis-pub-cmd.exe not found: "
+            + tools.describe_search(constants.ORBIS_PUB_CMD_NAMES) + ".")
     meta.validate()
 
     sce_sys = content_dir / "sce_sys"
