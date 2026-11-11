@@ -25,6 +25,7 @@ import shutil
 from pathlib import Path
 
 from . import constants
+from . import overrides as overrides_mod
 from .dxt1 import encode_dds
 from .media import image_to_rgba, flatten_alpha, FFMPEG, scale_crop_filter, require_tools, _run
 from .mdx import quad_model
@@ -101,13 +102,15 @@ def assemble_theme(work_dir: Path, content_dir: Path, *,
                    animated_size: tuple[int, int] = constants.ANIMATED_SIZE,
                    at9_path: Path | None = None,
                    homebgm_enable: bool = False,
-                   preview_image: Path | None = None) -> None:
+                   preview_image: Path | None = None,
+                   overrides: "overrides_mod.Overrides | None" = None) -> None:
     """Assemble the full theme content tree inside `content_dir`.
 
     Either `background_image` (static) or `frame_pngs` (animated) must be given.
     `preview_image` is the author's own preview of the wallpaper; when it is
     there it becomes the theme's thumbnail, which is what the console shows
-    in the theme list.
+    in the theme list. `overrides` carries the icon and sound effect
+    replacements the user asked for.
     """
     content_dir.mkdir(parents=True, exist_ok=True)
 
@@ -235,7 +238,16 @@ def assemble_theme(work_dir: Path, content_dir: Path, *,
         shutil.copy2(at9_path, sound_dir / "bgm_home.at9")
         print(f"  [audio] sound/bgm_home.at9")
 
-    # --- (no function/content icons generated; system defaults are used) --
+    # --- the user's icon and sound effect replacements --------------------
+    if overrides is not None and not overrides.empty:
+        written = overrides_mod.apply_icons(content_dir, overrides)
+        for path in written:
+            print(f"  [icon] {path}")
+        written = overrides_mod.apply_sfx(content_dir, overrides)
+        for path in written:
+            print(f"  [sfx]  {path}")
+    else:
+        print("  [icon] no replacements given: the console's own icons are kept")
 
 def estimate_raf_bytes(frame_count: int, size: tuple[int, int] = constants.ANIMATED_SIZE) -> int:
     """Bytes a frame sequence would occupy as DXT1a .dds files."""

@@ -67,17 +67,47 @@ PKG_DEFAULTS = {
     "title_id": "CUSA00000",
 }
 
-# Audio slots a PS4 theme supports.
+#: Function icons, in texture/function_icon/. The file name is fixed by the
+#: console; it is not configurable.
+FUNCTION_ICON_SIZE = (128, 128)
+FUNCTION_ICON_GLOW_SIZE = (152, 152)
+FUNCTION_ICONS = [
+    "community", "event", "friend", "message", "notification",
+    "party", "power", "setting", "trophy",
+]
+
+#: Content icons, in texture/content_icon/.
+CONTENT_ICON_SIZE = (512, 512)
+CONTENT_ICONS = [
+    "browser", "disc", "discoverlay", "folder", "gallery",
+    "library", "livefromps", "shareplay", "tvvideo", "usbmusic",
+]
+
+#: Where the function and content icons live inside the theme.
+FUNCTION_ICON_DIR = "texture/function_icon"
+CONTENT_ICON_DIR = "texture/content_icon"
+
+# --- Audio ----------------------------------------------------------------
+# Menu music is ATRAC9 (.at9) and the effects are Sony ADPCM (.vag). Both are
+# proprietary: ffmpeg decodes ATRAC9 but does not encode it, so the music is
+# converted with ps4_at9tool.exe, while the effects are encoded here.
 AUDIO_SLOTS = {
     "bgm": {
         "path": "sound/bgm_home.at9",
         "codec": "atrac9",
         "rate": 48000,
     },
-    "se_decide": {"path": "sound/se_decide.vag"},
-    "se_cursor": {"path": "sound/se_cursor.vag"},
-    "se_cancel": {"path": "sound/se_cancel.vag"},
+    "se_decide": {"path": "sound/se_decide.vag", "rate": 48000},
+    "se_cursor": {"path": "sound/se_cursor.vag", "rate": 48000},
+    "se_cancel": {"path": "sound/se_cancel.vag", "rate": 48000},
 }
+
+#: The three sound-effect slots, in the order the console expects them.
+SFX_SLOTS = ("se_decide", "se_cursor", "se_cancel")
+
+#: A system effect lasts an instant; trimming stops a whole song from ending
+#: up in an effect slot by accident.
+MAX_SFX_SECONDS = 5.0
 
 #: How much audio to keep for the BGM (seconds). Themes loop menu music.
 BGM_MAX_SECONDS = 300

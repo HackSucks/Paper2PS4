@@ -77,9 +77,28 @@ python3 -m paper2ps4 <project> -o out.fpkg [options]
   --wait SECONDS          seconds per animated frame (default: 0.1)
   --audio FILE            use only this audio file as the music
   --no-music              build the theme without music
+  --icons DIR             folder with system icon replacements
+  --sfx DIR               folder with sound effect replacements
   --keep-work             keep the intermediate working folder
   --verify                check the finished package and list what is inside
 ```
+
+## Replacing the system icons and sounds
+
+A theme may carry its own icons and menu sounds. Point `--icons` and `--sfx`
+at a folder:
+
+```bash
+python3 -m paper2ps4 ~/wallpapers/projects/2521462823 -o out/niko.fpkg \
+    --icons ~/my-icons --sfx ~/my-sounds
+```
+
+The folder can be laid out like the theme itself (`function_icon/`,
+`content_icon/`, `sound/`) or flat, with the file names the console expects
+(`power.png`, `browser.png`, `se_decide.wav`, …).
+
+**[docs/replacements.md](docs/replacements.md) lists every file, its size and
+its format.**
 
 ## Design decisions
 

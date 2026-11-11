@@ -15,7 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from paper2ps4 import cli, compose, constants, scene as scene_mod, tex as T  # noqa: E402
+from paper2ps4 import cli, compose, constants, overrides as overrides_mod  # noqa: E402
+from paper2ps4 import scene as scene_mod, tex as T  # noqa: E402
 from paper2ps4 import unpack, verify as verify_mod  # noqa: E402
 
 PROJECTS = Path.home() / "wallpapers" / "projects" / "myprojects"
@@ -216,6 +217,85 @@ def test_real_projects() -> None:
         check(f"{project.name} has a preview", has_preview)
 
 
+def test_overrides() -> None:
+    print("\n=== icon and sound effect replacements ===")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        icons = root / "icons"
+        (icons / "function_icon").mkdir(parents=True)
+        (icons / "content_icon").mkdir(parents=True)
+        (icons / "sound").mkdir(parents=True)
+
+        # A function icon, a content icon, icon0 and pic1.
+        T.write_png(icons / "function_icon" / "power.png", np_pink(128, 128))
+        T.write_png(icons / "content_icon" / "browser.png", np_pink(512, 512))
+        T.write_png(icons / "icon0.png", np_pink(512, 512))
+        T.write_png(icons / "pic1.png", np_pink(1920, 1080))
+
+        # A sound effect: one second of silence.
+        import wave
+        with wave.open(str(icons / "sound" / "se_decide.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(b"\x00\x00" * 48000)
+
+        found = overrides_mod.load(icons, icons)
+        check("the icons are found", len(found.icons) == 2,
+              f"{len(found.icons)} icons")
+        names = sorted(i.name for i in found.icons)
+        check("the right icons were found", names == ["browser", "power"],
+              str(names))
+        check("the sound effect is found", len(found.sfx) == 1,
+              f"{len(found.sfx)} effects")
+        check("icon0 is found", found.icon0 is not None)
+        check("pic1 is found", found.pic1 is not None)
+
+        # Apply them to a content folder.
+        content = root / "content"
+        content.mkdir()
+        written = overrides_mod.apply_icons(content, found)
+        check("the function icon was written",
+              "texture/function_icon/power.png" in written, str(written))
+        check("the glow was written",
+              "texture/function_icon/power_glow.png" in written, str(written))
+        check("the content icon was written",
+              "texture/content_icon/browser.png" in written, str(written))
+
+        from PIL import Image
+        with Image.open(content / "texture/function_icon/power.png") as im:
+            check("the function icon is 128x128", im.size == (128, 128),
+                  str(im.size))
+        with Image.open(content / "texture/function_icon/power_glow.png") as im:
+            check("the glow is 152x152", im.size == (152, 152), str(im.size))
+        with Image.open(content / "texture/content_icon/browser.png") as im:
+            check("the content icon is 512x512", im.size == (512, 512),
+                  str(im.size))
+
+        written = overrides_mod.apply_sfx(content, found)
+        check("the sound effect was written", "sound/se_decide.vag" in written,
+              str(written))
+        vag = (content / "sound/se_decide.vag").read_bytes()
+        check("it is a VAG file", vag[:4] == b"VAGp", str(vag[:4]))
+        check("it is 48 kHz",
+              int.from_bytes(vag[0x10:0x14], "big") == 48000)
+
+
+def test_flat_override_layout() -> None:
+    print("\n=== the flat override layout ===")
+    with tempfile.TemporaryDirectory() as tmp:
+        icons = Path(tmp) / "icons"
+        icons.mkdir()
+        T.write_png(icons / "power.png", np_pink(128, 128))
+        T.write_png(icons / "trophy.png", np_pink(128, 128))
+        T.write_png(icons / "something_else.png", np_pink(128, 128))
+
+        found = overrides_mod.load(icons, None)
+        names = sorted(i.name for i in found.icons)
+        check("the named icons are found", names == ["power", "trophy"], str(names))
+        check("an unknown file is ignored", "something_else" not in names)
+
+
 def test_budgets() -> None:
     print("\n=== the console budgets ===")
     check("13 frames fit at 1280x720",
@@ -240,6 +320,8 @@ if __name__ == "__main__":
     test_scene_graph()
     test_render_does_not_touch_the_source()
     test_render_matches_the_background_colour()
+    test_overrides()
+    test_flat_override_layout()
     test_budgets()
     test_build_and_verify()
     test_real_projects()

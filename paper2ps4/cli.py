@@ -37,6 +37,7 @@ from pathlib import Path
 from . import audio
 from . import compose
 from . import constants
+from . import overrides as overrides_mod
 from . import pkg as pkg_mod
 from . import scene as scene_mod
 from . import theme as theme_mod
@@ -110,6 +111,8 @@ def convert(project_dir: Path, out_fpkg: Path, *,
             audio_src: Path | None = None,
             no_music: bool = False,
             keep_work: bool = False,
+            icons_dir: Path | None = None,
+            sfx_dir: Path | None = None,
             ) -> Path:
     """Run the whole conversion. Returns the path to the produced .fpkg."""
     project_dir = project_dir.resolve()
@@ -222,6 +225,13 @@ def convert(project_dir: Path, out_fpkg: Path, *,
     # 4. Assemble the theme.
     print("[4/5] assembling the theme ...")
     content_dir = work / "content"
+
+    # The user's icon and sound effect replacements.
+    icon_overrides = overrides_mod.load(icons_dir, sfx_dir)
+    if not icon_overrides.empty:
+        print(f"    {len(icon_overrides.icons)} icon(s) and "
+              f"{len(icon_overrides.sfx)} sound effect(s) to replace")
+
     theme_mod.assemble_theme(
         work_dir=work,
         content_dir=content_dir,
@@ -233,6 +243,7 @@ def convert(project_dir: Path, out_fpkg: Path, *,
         at9_path=at9_path,
         homebgm_enable=homebgm_enable,
         preview_image=find_preview(project_dir),
+        overrides=icon_overrides,
     )
 
     # 5. Package.
@@ -301,6 +312,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="use only this audio file as the music")
     ap.add_argument("--no-music", action="store_true",
                     help="build the theme without music")
+    ap.add_argument("--icons", type=Path, default=None,
+                    help="folder with system icon replacements "
+                         "(power.png, browser.png, icon0.png, ...)")
+    ap.add_argument("--sfx", type=Path, default=None,
+                    help="folder with sound effect replacements "
+                         "(se_decide, se_cursor, se_cancel)")
     ap.add_argument("--keep-work", action="store_true",
                     help="keep the intermediate working folder")
     ap.add_argument("--verify", action="store_true",
@@ -328,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
             audio_src=args.audio,
             no_music=args.no_music,
             keep_work=args.keep_work,
+            icons_dir=args.icons,
+            sfx_dir=args.sfx,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[error] {exc}", file=sys.stderr)

@@ -193,6 +193,52 @@ def to_wav(src: Path, dest: Path, rate: int, max_seconds: float | None = None,
     return dest
 
 
+def pcm_mono(src: Path, rate: int, max_seconds: float | None = None,
+             gain_db: float = 0.0) -> np.ndarray:
+    """Decode any audio to PCM mono 16-bit at the requested rate.
+
+    The system effects are PS-ADPCM, which is mono, so the audio is mixed
+    down here. The gain is applied before the compression: raising it after
+    would only add quantisation noise.
+    """
+    require_tools()
+    args = [FFMPEG, "-hide_banner", "-loglevel", "error", "-i", str(src)]
+    if max_seconds:
+        args += ["-t", f"{max_seconds:g}"]
+    if abs(gain_db) > 0.01:
+        filtro = f"volume={gain_db:+.2f}dB"
+        if gain_db > 0:
+            filtro += ",alimiter=limit=0.98"
+        args += ["-af", filtro]
+    args += ["-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(rate), "-"]
+    raw = _run(args, capture_stdout=True)
+    if not raw:
+        raise MediaError("ffmpeg extracted no audio from the file.")
+    return np.frombuffer(raw, dtype="<i2")
+
+
+def render_png(src: Path, dest: Path, size: tuple[int, int]) -> Path:
+    """Scale and crop an image to exactly WxH and write it as a PNG.
+
+    The icons carry transparency, so the output keeps its alpha channel.
+    """
+    require_tools()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    width, height = size
+    args = [
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(src),
+        "-vf", scale_crop_filter(width, height),
+        "-frames:v", "1",
+        "-c:v", "png", "-pix_fmt", "rgba",
+        str(dest),
+    ]
+    _run(args)
+    if not dest.exists():
+        raise MediaError("ffmpeg produced no output image.")
+    return dest
+
+
 def flatten_alpha(rgba: np.ndarray, background=(0, 0, 0)) -> np.ndarray:
     """Composite over an opaque background and set alpha to 255.
 
