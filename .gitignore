@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build output
+out/
+*.fpkg
+
+# The working folder the converter keeps with --keep-work
+work/
+*-assets/
+
+# The proprietary Sony binaries are not distributed here
+tools/
+*.exe
+*.dll
