@@ -29,7 +29,12 @@ ANIMATED_SIZES = [(1280, 720), (960, 540), (640, 360)]
 WPE_SIZE = (960, 540)
 
 #: Frames per second captured from the engine and played back by the console.
+#: Higher fps = smoother but fewer frames fit in 6 MiB budget.
+#: At 960x540: 30 fps = 0.8s loop, 24 fps = 1s loop, 12 fps = 2s loop.
+#: At 640x360: 30 fps = 1.6s loop, 12 fps = 4s loop, 6 fps = 8s loop.
+#: Default 12 fps at 640x360 gives 4s coverage, fitting most scene loops.
 WPE_FPS = 12
+WPE_SIZE = (640, 360)
 
 # --- Hard limit on the background.raf folder ------------------------------
 RAF_SIZE_LIMIT = 6 * 1024 * 1024  # 6 MiB (measured on console)
