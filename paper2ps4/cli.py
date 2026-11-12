@@ -22,15 +22,17 @@ variable and on PATH. Nothing is hardcoded.
 
 Pipeline:
     1. Unpack scene.pkg (PKGV/PKGM container).
-    2. Render the scene: the objects are composited the way Wallpaper Engine
-       draws them, so the theme looks like the wallpaper.
-    3. Build the theme assets: theme.xml, param.sfo, icon0.png, pic1.png,
-       preview.png, plus the menu music (ATRAC9) when the scene has audio.
+    2. Render the scene. A still scene is composited the way Wallpaper Engine
+       draws it; a scene that animates (effects, particles, puppetry, custom
+       shaders) is rendered for real with linux-wallpaperengine on a private
+       virtual display and captured as a frame sequence. A scene that is
+       just a video is read directly.
+    3. Build the theme assets: theme.xml, param.sfo, icon0.png, preview.png,
+       plus the menu music (ATRAC9) when the scene has audio.
     4. Package with orbis-pub-cmd.exe.
 
-Shaders and particles are the one thing that cannot be reproduced: a PS4
-theme cannot run custom HLSL/GLSL. Their output is already baked into the
-textures, so what is missing is the animation, not the artwork.
+Shaders are the one thing a PS4 theme cannot run. Rendering the scene
+captures what they do; a still scene keeps their artwork in the textures.
 """
 
 from __future__ import annotations
@@ -48,10 +50,12 @@ from . import overrides as overrides_mod
 from . import pkg as pkg_mod
 from . import scene as scene_mod
 from . import theme as theme_mod
+from . import theme_xml
 from . import tools
 from . import unpack
 from . import verify as verify_mod
 from . import video
+from . import wallpaper
 
 
 # ---------------------------------------------------------------------------
@@ -112,20 +116,26 @@ def convert(project_dir: Path, out_fpkg: Path, *,
             content_id: str | None = None,
             category: str = constants.PKG_DEFAULTS["category"],
             passcode: str = constants.PKG_DEFAULTS["passcode"],
+            provider: str = constants.PKG_DEFAULTS["provider"],
             animated: bool = False,
+            static: bool = False,
             frames: int | None = None,
             size: str | None = None,
-            wait: float = constants.DEFAULT_WAIT_SECONDS,
+            wait: float | None = None,
             audio_src: Path | None = None,
             no_music: bool = False,
             keep_work: bool = False,
             icons_dir: Path | None = None,
             sfx_dir: Path | None = None,
+            theme_color: int | None = None,
             ) -> Path:
     """Run the whole conversion. Returns the path to the produced package."""
     project_dir = project_dir.resolve()
     if not project_dir.is_dir():
         raise FileNotFoundError(f"project folder not found: {project_dir}")
+
+    if animated and static:
+        raise ValueError("--animated and --static cannot be used together")
 
     out_fpkg = Path(out_fpkg)
     if not out_fpkg.suffix:
@@ -134,6 +144,10 @@ def convert(project_dir: Path, out_fpkg: Path, *,
 
     scene_pkg = find_scene_pkg(project_dir)
     metadata = load_project_metadata(project_dir)
+
+    scheme_color = metadata.get("general", {}).get("properties", {}).get("schemecolor")
+    if theme_color is not None and not 0 <= theme_color <= 7:
+        raise ValueError("--theme-color must be between 0 and 7")
 
     if title is None:
         title = project_title(metadata, project_dir.name)
@@ -169,47 +183,125 @@ def convert(project_dir: Path, out_fpkg: Path, *,
     shader_count = sum(1 for p in sorted(work_src.rglob("*"))
                        if p.is_file() and p.suffix.lower() in constants.SHADER_EXTS)
 
-    if shader_count:
-        print(f"    [*] {shader_count} shader file(s) - custom shaders cannot "
-              "run on a PS4 theme; their artwork is already in the textures.")
+    reasons = wallpaper.scene_animation_reasons(work_src)
+    # A scene that is only a video does not need rendering: its frames can
+    # be read straight from the file, which keeps the picture crisp.
+    needs_render = any(reason != "video" for reason in reasons)
+    if reasons:
+        print(f"    animation: {', '.join(reasons)}")
 
     background_png: Path | None = None
     frame_pngs: list[Path] | None = None
-    animated_size = constants.ANIMATED_SIZE
+    wait_seconds: float | None = wait
+
+    engine = wallpaper.find_engine()
+    can_render_scene = engine is not None and wallpaper.available()
+    wants_animation = not static and (animated or bool(reasons))
+    use_video = bool(videos) and not needs_render
+    use_wpe = wants_animation and not use_video and can_render_scene
+
+    if wants_animation and not (use_video or use_wpe):
+        if videos:
+            # The renderer is unavailable, but the scene still carries a
+            # video: use it rather than throwing the animation away.
+            use_video = True
+        elif animated:
+            raise RuntimeError(
+                "the scene has to be rendered to animate it, but "
+                + (wallpaper.unavailable_reason() or "the renderer is unavailable"))
+        else:
+            print("    [!] cannot render the animation ("
+                  + (wallpaper.unavailable_reason() or "renderer unavailable")
+                  + "); building a still theme instead")
+
     if size:
         w, h = size.lower().split("x")
         animated_size = (int(w), int(h))
+    elif use_wpe:
+        # 960x540 fits 24 frames in the console's 6 MiB budget: the best
+        # trade-off between a sharp background and smooth motion.
+        animated_size = constants.WPE_SIZE
+    else:
+        animated_size = constants.ANIMATED_SIZE
 
     budget = min(
         constants.RAF_SIZE_LIMIT // constants.dds_bytes_for(*animated_size),
         constants.MAX_FRAME_COUNT,
     )
 
-    if animated or videos:
-        # --- animated theme ----------------------------------------------
-        source = videos[0] if videos else None
-        if source is None:
-            raise RuntimeError(
-                "--animated was asked for but the scene has no video file.")
+    if use_wpe:
+        # linux-wallpaperengine reads project.json next to the scene, and a
+        # scene.pkg does not always carry it.
+        project_json = project_dir / "project.json"
+        if project_json.is_file() and not (work_src / "project.json").is_file():
+            shutil.copy2(project_json, work_src / "project.json")
+
+        if shader_count:
+            print(f"    [*] {shader_count} shader file(s): rendered by "
+                  "linux-wallpaperengine")
+
+        count = min(frames or budget, budget)
+        wait_seconds = wait if wait is not None else 1.0 / constants.WPE_FPS
+        print(f"    rendering {count} frames at {animated_size[0]}x{animated_size[1]}, "
+              f"{1.0 / wait_seconds:.1f} fps "
+              f"(console budget={budget})")
+        try:
+            frame_pngs = wallpaper.render_frames(
+                work_src, work_assets / "frames", count, animated_size,
+                wait_seconds, engine=engine, log_dir=work_assets,
+            )
+        except wallpaper.WallpaperError as exc:
+            print(f"    [!] scene rendering failed: {exc}")
+            if videos:
+                use_wpe = False
+                use_video = True
+            elif animated:
+                raise
+            else:
+                print("    [!] building a still theme instead")
+
+    if use_video and frame_pngs is None:
+        # --- the scene is a video: extract its frames directly -----------
+        source = videos[0]
         print(f"    source: {source.relative_to(work_src)}")
         duration, width, height = video.probe_video(source)
         print(f"    {width}x{height}, {duration:.2f}s")
 
         count = min(frames or budget, budget)
+        if wait_seconds is None:
+            wait_seconds = constants.DEFAULT_WAIT_SECONDS
         print(f"    {count} frames at {animated_size[0]}x{animated_size[1]} "
               f"(console budget={budget})")
         frame_pngs = video.extract_frames(source, work_assets / "frames",
                                           count, animated_size, duration)
+
+    if frame_pngs:
         background_png = frame_pngs[0]
     else:
         # --- static theme: render the scene ------------------------------
         # The scratch files go to the work folder: the unpacked scene is
         # never written to.
+        if shader_count:
+            print(f"    [*] {shader_count} shader file(s) - custom shaders cannot "
+                  "run on a PS4 theme; their artwork is already in the textures.")
         canvas = compose.render_scene(scene, work_src, work_dir=work_assets / "scratch")
         rendered = work_assets / "scene.png"
         compose.write_render(canvas, rendered)
         background_png = rendered
+        wait_seconds = wait if wait is not None else constants.DEFAULT_WAIT_SECONDS
         print(f"    rendered {canvas.shape[1]}x{canvas.shape[0]}")
+
+    # The theme colour is the console's UI accent. The wallpaper's own
+    # schemecolor is the author's intent; when it is missing, the picture
+    # itself supplies the colour.
+    if theme_color is None:
+        theme_color = theme_xml.infer_themecolor(scheme_color)
+        if theme_color is None and background_png is not None:
+            theme_color = theme_xml.infer_themecolor_from_image(background_png)
+        if theme_color is None:
+            theme_color = 0
+    print(f"    [theme] colour: {theme_color} "
+          f"({theme_xml.themecolor_name(theme_color)})")
 
     # 3. Music.
     at9_path: Path | None = None
@@ -236,6 +328,15 @@ def convert(project_dir: Path, out_fpkg: Path, *,
     else:
         print("[3/5] no audio in the scene: the theme will be silent.")
 
+    bgm_loudness = None
+    if at9_path is not None:
+        try:
+            bgm_loudness = pkg_mod.calc_loudness(at9_path)
+            if bgm_loudness is not None:
+                print(f"    [audio] measured loudness: {bgm_loudness:.2f} LKFS")
+        except Exception as exc:
+            print(f"    [!] loudness measurement skipped: {exc}")
+
     # 4. Assemble the theme.
     print("[4/5] assembling the theme ...")
     content_dir = work / "content"
@@ -252,10 +353,11 @@ def convert(project_dir: Path, out_fpkg: Path, *,
         title=title,
         background_image=background_png,
         frame_pngs=frame_pngs,
-        wait=wait,
+        wait=wait_seconds or constants.DEFAULT_WAIT_SECONDS,
         animated_size=animated_size,
         at9_path=at9_path,
         homebgm_enable=homebgm_enable,
+        theme_color=theme_color,
         preview_image=find_preview(project_dir),
         overrides=icon_overrides,
     )
@@ -275,6 +377,8 @@ def convert(project_dir: Path, out_fpkg: Path, *,
         content_id=content_id,
         category=category,
         passcode=passcode,
+        provider=provider,
+        bgm_loudness=bgm_loudness,
     )
     built = pkg_mod.build_package(work, content_dir, meta)
 
@@ -314,6 +418,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="theme title (default: the title in project.json)")
     ap.add_argument("--title-id", default=constants.PKG_DEFAULTS["title_id"],
                     help=f"title ID (default: {constants.PKG_DEFAULTS['title_id']})")
+    ap.add_argument("--provider", default=constants.PKG_DEFAULTS["provider"],
+                    help="publisher name shown by the console "
+                         f"(default: {constants.PKG_DEFAULTS['provider']})")
+    ap.add_argument("--theme-color", type=int, choices=range(8), default=None,
+                    help="PS4 theme colour index 0-7 (default: inferred from "
+                         "the scene: 0 blue, 1 pink, 2 red, 3 navy, 4 dark "
+                         "gray, 5 gold, 6 light steel blue, 7 purple)")
     ap.add_argument("--content-id", default=None,
                     help="content ID (default: generated from the title)")
     ap.add_argument("--category", default=constants.PKG_DEFAULTS["category"],
@@ -321,15 +432,23 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--passcode", default=constants.PKG_DEFAULTS["passcode"],
                     help="32-character package passcode (default: 32 zeros)")
     ap.add_argument("--animated", action="store_true",
-                    help="force an animated theme even if the scene has no video")
+                    help="force an animated theme (the scene is rendered even "
+                         "if no animation was detected)")
+    ap.add_argument("--static", action="store_true",
+                    help="force a still theme even if the scene animates")
     ap.add_argument("--frames", type=int, default=None,
-                    help=f"number of animated frames (default: {constants.MAX_FRAMES}, "
-                         "capped by the console budget)")
+                    help="number of animated frames (default: as many as the "
+                         "console budget allows)")
     ap.add_argument("--size", default=None,
-                    help="animated resolution WxH (default: 1280x720; "
-                         "960x540 and 640x360 fit more frames)")
-    ap.add_argument("--wait", type=float, default=constants.DEFAULT_WAIT_SECONDS,
-                    help=f"seconds per animated frame (default: {constants.DEFAULT_WAIT_SECONDS})")
+                    help="animated resolution WxH (default: 960x540 when the "
+                         "scene is rendered, 1280x720 for a video)")
+    ap.add_argument("--wait", type=float, default=None,
+                    help="seconds per animated frame (default: 1/12 s when "
+                         "the scene is rendered, 0.1 s for a video)")
+    ap.add_argument("--wpe", type=Path, default=None, metavar="DIR",
+                    help="folder holding linux-wallpaperengine, its shared "
+                         "library and its assets/ (default: the bundled copy "
+                         "in vendor/, then PATH)")
     ap.add_argument("--audio", type=Path, default=None,
                     help="use only this audio file as the music")
     ap.add_argument("--no-music", action="store_true",
@@ -360,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # The tool folders have to be known before anything looks for the tools.
     tools.set_tool_dirs(args.tools or [])
+    wallpaper.set_engine_dir(args.wpe)
 
     try:
         out = convert(
@@ -370,7 +490,9 @@ def main(argv: list[str] | None = None) -> int:
             content_id=args.content_id,
             category=args.category,
             passcode=args.passcode,
+            provider=args.provider,
             animated=args.animated,
+            static=args.static,
             frames=args.frames,
             size=args.size,
             wait=args.wait,
@@ -379,13 +501,15 @@ def main(argv: list[str] | None = None) -> int:
             keep_work=args.keep_work,
             icons_dir=args.icons,
             sfx_dir=args.sfx,
+            theme_color=args.theme_color,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[error] {exc}", file=sys.stderr)
         return 1
 
     if args.verify:
-        ok, problems, contents = verify_mod.verify_theme_package(out)
+        print("\n=== verifying the package ===")
+        ok, problems, contents = verify_mod.verify_theme_package(out, deep=True)
         print("\n=== package contents ===")
         for entry in contents:
             print(f"  {entry}")

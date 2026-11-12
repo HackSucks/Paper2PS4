@@ -196,7 +196,11 @@ def test_build_and_verify() -> None:
         check("the backgrounds are inside",
               "Image0/texture/background/homescreen.png" in contents)
         check("icon0 is inside", "Sc0/icon0.png" in contents)
-        check("pic1 is inside", "Sc0/pic1.png" in contents)
+        check("pic1 is absent", "Sc0/pic1.png" not in contents)
+
+        sfo = verify_mod.parse_sfo(verify_mod.find_param_sfo(out))
+        check("the provider is set", bool(sfo.get("PROVIDER")),
+              str(sfo.get("PROVIDER")))
 
 
 def test_real_projects() -> None:
@@ -225,11 +229,10 @@ def test_overrides() -> None:
         (icons / "content_icon").mkdir(parents=True)
         (icons / "sound").mkdir(parents=True)
 
-        # A function icon, a content icon, icon0 and pic1.
+        # A function icon, a content icon and icon0.
         T.write_png(icons / "function_icon" / "power.png", np_pink(128, 128))
         T.write_png(icons / "content_icon" / "browser.png", np_pink(512, 512))
         T.write_png(icons / "icon0.png", np_pink(512, 512))
-        T.write_png(icons / "pic1.png", np_pink(1920, 1080))
 
         # A sound effect: one second of silence.
         import wave
@@ -248,7 +251,6 @@ def test_overrides() -> None:
         check("the sound effect is found", len(found.sfx) == 1,
               f"{len(found.sfx)} effects")
         check("icon0 is found", found.icon0 is not None)
-        check("pic1 is found", found.pic1 is not None)
 
         # Apply them to a content folder.
         content = root / "content"
@@ -270,6 +272,8 @@ def test_overrides() -> None:
         with Image.open(content / "texture/content_icon/browser.png") as im:
             check("the content icon is 512x512", im.size == (512, 512),
                   str(im.size))
+        with Image.open(content / "sce_sys/icon0.png") as im:
+            check("icon0 is a 24-bit PNG", im.mode == "RGB", im.mode)
 
         written = overrides_mod.apply_sfx(content, found)
         check("the sound effect was written", "sound/se_decide.vag" in written,
@@ -377,6 +381,76 @@ def tools_available() -> bool:
     return pkg_mod.tools_available()
 
 
+def test_theme_color() -> None:
+    print("\n=== the theme colour ===")
+    from paper2ps4 import theme_xml
+
+    check("the palette is the console's 8 colours",
+          theme_xml.THEME_COLOR_NAMES[0] == "blue"
+          and theme_xml.THEME_COLOR_NAMES[3] == "navy"
+          and theme_xml.THEME_COLOR_NAMES[7] == "purple",
+          str(theme_xml.THEME_COLOR_NAMES))
+
+    checked = [
+        ("0.04 0.20 0.53", 0, "blue"),
+        ("0.90 0.13 0.55", 1, "pink"),
+        ("0.85 0.15 0.18", 2, "red"),
+        ("0.10 0.16 0.30", 3, "navy"),
+        ("0.29 0.29 0.30", 4, "dark gray"),
+        ("0.79 0.62 0.16", 5, "gold"),
+        ("0.69 0.77 0.87", 6, "light steel blue"),
+        ("0.40 0.20 0.58", 7, "purple"),
+        ("#E6178C", 1, "pink"),
+        ({"user": "schemecolor", "value": "0.10 0.16 0.30"}, 3, "navy"),
+    ]
+    for value, expected, name in checked:
+        got = theme_xml.infer_themecolor(value)
+        check(f"{name} is {expected}", got == expected, str(got))
+
+    check("black means no colour", theme_xml.infer_themecolor("0 0 0") is None)
+    check("a missing colour means no colour",
+          theme_xml.infer_themecolor(None) is None)
+
+
+def test_animation_detection() -> None:
+    print("\n=== what makes a scene animate ===")
+    from paper2ps4 import wallpaper
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp)
+        (src / "scene.json").write_text(json.dumps({
+            "general": {}, "objects": [
+                {"image": "models/bg.json", "visible": True},
+                {"particle": "particles/rain.json", "visible": True},
+                {"particle": "particles/ash.json", "visible": False},
+                {"image": "models/x.json", "visible": True,
+                 "effects": [{"file": "effects/shake/effect.json",
+                              "visible": True}]},
+                {"image": "models/y.json", "visible": True,
+                 "effects": [{"file": "effects/shake/effect.json",
+                              "visible": False}]},
+            ],
+        }), encoding="utf-8")
+
+        reasons = wallpaper.scene_animation_reasons(src)
+        check("particles are noticed", "particles" in reasons, str(reasons))
+        check("effects are noticed", "effects" in reasons, str(reasons))
+
+        (src / "scene.json").write_text(json.dumps({
+            "general": {}, "objects": [
+                {"image": "models/bg.json", "visible": True},
+            ],
+        }), encoding="utf-8")
+        check("a still scene is still",
+              wallpaper.scene_animation_reasons(src) == [],
+              str(wallpaper.scene_animation_reasons(src)))
+
+    if sys.platform == "linux" and wallpaper.VENDOR_DIR.is_dir():
+        check("the bundled engine is found",
+              wallpaper.find_engine() is not None,
+              str(wallpaper.unavailable_reason()))
+
+
 def test_budgets() -> None:
     print("\n=== the console budgets ===")
     check("13 frames fit at 1280x720",
@@ -405,6 +479,8 @@ if __name__ == "__main__":
     test_flat_override_layout()
     test_tool_resolution()
     test_output_extension()
+    test_theme_color()
+    test_animation_detection()
     test_budgets()
     test_build_and_verify()
     test_real_projects()

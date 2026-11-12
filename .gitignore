@@ -8,6 +8,11 @@ venv/
 # Build output
 out/
 *.fpkg
+*.pkg
+*.pkg.work/
+
+# The bundled engine's assets are unpacked from assets.tar.xz on first use
+vendor/linux-wallpaperengine/assets/
 
 # The working folder the converter keeps with --keep-work
 work/

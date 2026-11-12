@@ -29,7 +29,6 @@ overrides/
     se_cursor.wav
     se_cancel.wav
   icon0.png            512x512
-  pic1.png             1920x1080
 ```
 
 The second is flat, with the file names the console expects:
@@ -40,7 +39,6 @@ overrides/
   browser.png          a content icon
   se_decide.wav        a sound effect
   icon0.png
-  pic1.png
 ```
 
 ## The files
@@ -83,14 +81,17 @@ The icons of the content on the console's home screen.
 | `tvvideo.png` | 512×512 | PNG with alpha | `texture/content_icon/tvvideo.png` |
 | `usbmusic.png` | 512×512 | PNG with alpha | `texture/content_icon/usbmusic.png` |
 
-### The theme's own icon and shot
+### The theme's own icon
 
 | File | Size | Format | Goes to |
 |---|---|---|---|
-| `icon0.png` | 512×512 | PNG | `sce_sys/icon0.png` — the icon in the console's menu |
-| `pic1.png` | 1920×1080 | PNG | `sce_sys/pic1.png` — the shot in the store |
+| `icon0.png` | 512×512 | 24-bit PNG | `sce_sys/icon0.png` — the icon in the console's menu |
 
-Without them the theme's own background is used for both.
+Without it the theme's own background is used. It is written as a 24-bit PNG
+(no alpha) because the console's checker rejects a 32-bit `icon0.png`.
+
+There is no `pic1.png` in a theme package: `img_verify` rejects it ("must
+not exist"), so a `pic1.png` in the folder is ignored.
 
 ### Sound effects
 

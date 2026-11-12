@@ -16,7 +16,6 @@ The folder may be laid out like the theme itself:
         se_cursor.wav      the "move cursor" sound
         se_cancel.wav      the "cancel" sound
       icon0.png            512x512, the icon in the console's menu
-      pic1.png             1920x1080, the store shot
 
 or flat, with the file names the console expects:
 
@@ -25,12 +24,14 @@ or flat, with the file names the console expects:
       browser.png         a content icon
       se_decide.wav       a sound effect
       icon0.png
-      pic1.png
 
 The file names are fixed by the console: they are the ones it looks for.
 Sizes are not fixed — an image is scaled and cropped to the size the slot
 needs — but the formats are: PNG for the icons, and any audio ffmpeg reads
 for the effects (they are encoded to VAG).
+
+There is no pic1.png in a theme package: orbis-pub-cmd's checker rejects it,
+so a pic1.png in the folder is ignored.
 """
 
 from __future__ import annotations
@@ -78,11 +79,10 @@ class Overrides:
     icons: list[IconOverride] = field(default_factory=list)
     sfx: list[SfxOverride] = field(default_factory=list)
     icon0: Path | None = None
-    pic1: Path | None = None
 
     @property
     def empty(self) -> bool:
-        return not (self.icons or self.sfx or self.icon0 or self.pic1)
+        return not (self.icons or self.sfx or self.icon0)
 
 
 def _find(folder: Path, stem: str, extensions: tuple[str, ...]) -> Path | None:
@@ -162,7 +162,6 @@ def load(icons_dir: Path | None, sfx_dir: Path | None) -> Overrides:
                 ))
 
         result.icon0 = _find(icons_dir, "icon0", ICON_EXTS)
-        result.pic1 = _find(icons_dir, "pic1", ICON_EXTS)
 
     if sfx_dir is not None:
         sfx_dir = Path(sfx_dir)
@@ -229,13 +228,8 @@ def apply_icons(content_dir: Path, overrides: Overrides) -> list[str]:
 
     if overrides.icon0 is not None:
         dest = content_dir / constants.PKG_FIXED_PATHS["sce_icon"]
-        render_png(overrides.icon0, dest, constants.SCE_ICON_SIZE)
+        render_png(overrides.icon0, dest, constants.SCE_ICON_SIZE, alpha=False)
         written.append(constants.PKG_FIXED_PATHS["sce_icon"])
-
-    if overrides.pic1 is not None:
-        dest = content_dir / constants.PKG_FIXED_PATHS["pic1"]
-        render_png(overrides.pic1, dest, constants.PIC1_SIZE)
-        written.append(constants.PKG_FIXED_PATHS["pic1"])
 
     return written
 

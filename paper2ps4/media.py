@@ -217,10 +217,13 @@ def pcm_mono(src: Path, rate: int, max_seconds: float | None = None,
     return np.frombuffer(raw, dtype="<i2")
 
 
-def render_png(src: Path, dest: Path, size: tuple[int, int]) -> Path:
+def render_png(src: Path, dest: Path, size: tuple[int, int],
+               alpha: bool = True) -> Path:
     """Scale and crop an image to exactly WxH and write it as a PNG.
 
-    The icons carry transparency, so the output keeps its alpha channel.
+    The icons carry transparency, so the output keeps its alpha channel by
+    default. Pass `alpha=False` for slots whose PNG must be 24-bit: the PS4
+    checker rejects a theme's icon0.png when it is a 32-bit PNG.
     """
     require_tools()
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -230,7 +233,7 @@ def render_png(src: Path, dest: Path, size: tuple[int, int]) -> Path:
         "-i", str(src),
         "-vf", scale_crop_filter(width, height),
         "-frames:v", "1",
-        "-c:v", "png", "-pix_fmt", "rgba",
+        "-c:v", "png", "-pix_fmt", "rgba" if alpha else "rgb24",
         str(dest),
     ]
     _run(args)

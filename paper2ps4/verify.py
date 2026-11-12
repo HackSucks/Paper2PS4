@@ -181,7 +181,45 @@ def list_package_entries(pkg_path: Path) -> list[str]:
     return entries
 
 
-def verify_theme_package(pkg_path: Path) -> tuple[bool, list[str], list[str]]:
+def run_img_verify(pkg_path: Path) -> tuple[bool, list[str]]:
+    """Run orbis-pub-cmd's own img_verify on the finished package.
+
+    This is the authority on whether the console will accept the package: it
+    knows the parameter area sizes, the PNG colour depths and the AT9 limits
+    that the lighter checks here only approximate.
+    """
+    exe = tools.find_tool(constants.ORBIS_PUB_CMD_NAMES)
+    if exe is None:
+        raise VerifyError("orbis-pub-cmd.exe not found; cannot run img_verify")
+
+    cmd = tools._windows_tool_cmd(exe) + [
+        "img_verify",
+        "--passcode", constants.PKG_DEFAULTS["passcode"],
+        str(pkg_path),
+    ]
+    import os
+
+    env = os.environ.copy()
+    env["WINEDEBUG"] = "-all"
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env=env)
+    out = proc.stdout or ""
+
+    errors: list[str] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("[Error]"):
+            continue
+        message = line[len("[Error]"):].strip()
+        if message.startswith(("Number of Error", "Result :", "Result:")):
+            continue
+        if "Process finished" in message:
+            continue
+        errors.append(message)
+    return not errors, errors
+
+
+def verify_theme_package(pkg_path: Path,
+                         deep: bool = False) -> tuple[bool, list[str], list[str]]:
     """Check that a package is a PS4 *theme* and list its contents.
 
     Returns (ok, problems, contents). The rules that matter, all measured on
@@ -191,7 +229,11 @@ def verify_theme_package(pkg_path: Path) -> tuple[bool, list[str], list[str]]:
       * CATEGORY must be 'ac' ('gd' shows up in the Themes list but crashes
         with CE-36329-3)
       * theme.xml must be at the root of Image0
+      * a theme has no sce_sys/pic1.png (the checker rejects it)
       * the .at9 music must be 144 kbps, or the console stays silent
+
+    `deep` also runs orbis-pub-cmd's img_verify, which is slower but checks
+    the details (parameter sizes, PNG bit depths, AT9 limits) exactly.
     """
     pkg_path = Path(pkg_path)
     problems: list[str] = []
@@ -218,6 +260,8 @@ def verify_theme_package(pkg_path: Path) -> tuple[bool, list[str], list[str]]:
                         "(the console crashes when applying the theme)")
     if sfo.get("APP_VER") is not None:
         problems.append("APP_VER is present: that is an application, not a theme")
+    if not sfo.get("PROVIDER"):
+        problems.append("param.sfo has no PROVIDER")
 
     if "Image0/theme.xml" not in contents:
         problems.append("Image0/theme.xml is missing")
@@ -225,5 +269,14 @@ def verify_theme_package(pkg_path: Path) -> tuple[bool, list[str], list[str]]:
         problems.append("Sc0/param.sfo is missing")
     if "Sc0/icon0.png" not in contents:
         problems.append("Sc0/icon0.png is missing")
+    if "Sc0/pic1.png" in contents:
+        problems.append("Sc0/pic1.png must not exist in a theme package")
+
+    if deep:
+        try:
+            _ok, errors = run_img_verify(pkg_path)
+            problems.extend(errors)
+        except (VerifyError, subprocess.SubprocessError) as exc:
+            problems.append(f"img_verify could not run: {exc}")
 
     return not problems, problems, contents

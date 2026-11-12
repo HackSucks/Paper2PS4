@@ -6,7 +6,6 @@ folder the PS4 expects:
     texture/background/homescreen.png      1920x1080 (also functionscreen)
     texture/preview.png                    740x416
     sce_sys/icon0.png                      512x512
-    sce_sys/pic1.png                       1920x1080
     theme.xml                              descriptor
     sound/bgm_home.at9                     menu music (optional)
     scene/background.raf/                  animated background (optional)
@@ -16,7 +15,10 @@ folder the PS4 expects:
 
 For a static theme the single background image is used for every slot.
 For an animated theme the frames become background.raf/ and the home image
-becomes the theme's list thumbnail / icon / pic1.
+becomes the theme's list thumbnail / icon.
+
+The theme package deliberately has no sce_sys/pic1.png: orbis-pub-cmd's
+img_verify rejects it ("The file/directory must not exist") for themes.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from pathlib import Path
 from . import constants
 from . import overrides as overrides_mod
 from .dxt1 import encode_dds
-from .media import image_to_rgba, flatten_alpha, FFMPEG, scale_crop_filter, require_tools, _run
+from .media import image_to_rgba, flatten_alpha, render_png
 from .mdx import quad_model
 from .raf import build_scene as build_raf_scene, plane_half_size
 from .theme_xml import build_theme_xml
@@ -71,29 +73,12 @@ def _image_is_large_enough(path: Path, min_width: int) -> bool:
 
 
 def _prepare_icon(source: Path | None, fallback: Path | None, dest: Path,
-                  size: tuple[int, int]) -> Path:
-    """Render one icon slot: use `source` if present, else `fallback`, else a
-    solid magenta placeholder so the slot is never missing."""
+                  size: tuple[int, int], alpha: bool = True) -> Path:
+    """Render one icon slot: use `source` if present, else `fallback`."""
     src = source or fallback
     if src is None:
         raise ThemeError(f"no image available for {dest.name}")
-    rgba = image_to_rgba(src, size)
-    rgba = flatten_alpha(rgba)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    # Save as lossless PNG (icons are not DXT1a in the theme).
-    width, height = size
-    cmd = [
-        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(src),
-        "-vf", scale_crop_filter(width, height),
-        "-frames:v", "1",
-        "-c:v", "png", "-pix_fmt", "rgba",
-        str(dest),
-    ]
-    _run(cmd)
-    if not dest.exists():
-        raise ThemeError(f"ffmpeg produced no output image for {dest.name}")
-    return dest
+    return render_png(src, dest, size, alpha=alpha)
 
 
 def assemble_theme(work_dir: Path, content_dir: Path, *,
@@ -102,6 +87,7 @@ def assemble_theme(work_dir: Path, content_dir: Path, *,
                    animated_size: tuple[int, int] = constants.ANIMATED_SIZE,
                    at9_path: Path | None = None,
                    homebgm_enable: bool = False,
+                   theme_color: int = 0,
                    preview_image: Path | None = None,
                    overrides: "overrides_mod.Overrides | None" = None) -> None:
     """Assemble the full theme content tree inside `content_dir`.
@@ -172,7 +158,7 @@ def assemble_theme(work_dir: Path, content_dir: Path, *,
         print(f"  [raf] index.xml ({len(frames)} frames, wait={wait}s, "
               f"{total_raf_bytes / 1024:.1f} KiB total)")
 
-        # Home image becomes the theme thumbnail/icon/pic1.
+        # Home image becomes the theme thumbnail/icon.
         home_source = background_image
     else:
         home_source = background_image
@@ -185,16 +171,18 @@ def assemble_theme(work_dir: Path, content_dir: Path, *,
     # on both screens, so the still backgrounds would never be seen. Leaving
     # them out also keeps the package smaller.
     if not is_animated:
-        homescreen_dds = tex_bg / "homescreen.png"
-        rgba = image_to_rgba(home_source, constants.STATIC_SIZE)
-        rgba = flatten_alpha(rgba)
-        _write_dds(rgba, homescreen_dds)
+        # These are real PNG files despite living next to DXT1a data
+        # elsewhere in the theme: only background.raf/*.dds is DXT1a. A DDS
+        # stored under a .png name is what makes the console call the theme
+        # invalid when it is selected.
+        homescreen_png = tex_bg / "homescreen.png"
+        render_png(home_source, homescreen_png, constants.STATIC_SIZE, alpha=False)
         print(f"  [bg] homescreen.png "
               f"({constants.STATIC_SIZE[0]}x{constants.STATIC_SIZE[1]})")
 
         # functionscreen.png copies from home (only visible without RAF).
-        funcscreen_dds = tex_bg / "functionscreen.png"
-        shutil.copy2(homescreen_dds, funcscreen_dds)
+        funcscreen_png = tex_bg / "functionscreen.png"
+        shutil.copy2(homescreen_png, funcscreen_png)
     else:
         print("  [bg] animated: the still backgrounds are left out "
               "(the scene covers both screens)")
@@ -213,21 +201,21 @@ def assemble_theme(work_dir: Path, content_dir: Path, *,
         else:
             print(f"  [bg] preview image is too small - using the background "
                   "for the thumbnail")
-    rgba = image_to_rgba(preview_source, constants.PREVIEW_SIZE)
-    rgba = flatten_alpha(rgba)
-    _write_dds(rgba, preview_png)
+    render_png(preview_source, preview_png, constants.PREVIEW_SIZE, alpha=False)
     print(f"  [bg] preview.png ({constants.PREVIEW_SIZE[0]}x{constants.PREVIEW_SIZE[1]}"
           f"{' from ' + preview_source.name if preview_source != home_source else ''})")
 
-    # --- sce_sys/icon0.png (512x512) and pic1.png (1920x1080) -----------
+    # --- sce_sys/icon0.png (512x512) -------------------------------------
+    # 24-bit on purpose: the checker rejects a 32-bit PNG here. There is no
+    # pic1.png in a theme package (the checker rejects it as well).
     icon0 = sce_sys / "icon0.png"
-    pic1 = sce_sys / "pic1.png"
-    _prepare_icon(home_source, home_source, icon0, constants.SCE_ICON_SIZE)
-    _prepare_icon(home_source, home_source, pic1, constants.PIC1_SIZE)
+    _prepare_icon(home_source, home_source, icon0, constants.SCE_ICON_SIZE,
+                  alpha=False)
 
     # --- theme.xml --------------------------------------------------------
     theme_xml = build_theme_xml(
         label=title,
+        themecolor=theme_color,
         homebgm_enable=homebgm_enable and at9_path is not None,
     )
     (content_dir / "theme.xml").write_text(theme_xml, encoding="utf-8")

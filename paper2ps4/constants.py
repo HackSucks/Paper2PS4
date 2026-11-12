@@ -13,7 +13,6 @@ STATIC_SIZE = (1920, 1080)      # background.dds / homescreen
 ANIMATED_SIZE = (1280, 720)     # default animated background resolution
 ICON_SIZE = (128, 128)          # function icon
 SCE_ICON_SIZE = (512, 512)      # icon0.png (content icon in sce_sys)
-PIC1_SIZE = (1920, 1080)        # pic1.png (store shot)
 PREVIEW_SIZE = (740, 416)       # list thumbnail
 
 #: Smallest preview image that is still worth using as the thumbnail. The
@@ -23,6 +22,14 @@ PREVIEW_MIN_WIDTH = 480
 
 # Animated background resolutions offered (lower res = more frames fit).
 ANIMATED_SIZES = [(1280, 720), (960, 540), (640, 360)]
+
+#: Resolution used when the scene is rendered with linux-wallpaperengine.
+#: 960x540 leaves room for 24 frames inside the 6 MiB RAF budget, which is
+#: the best balance between a sharp background and smooth motion.
+WPE_SIZE = (960, 540)
+
+#: Frames per second captured from the engine and played back by the console.
+WPE_FPS = 12
 
 # --- Hard limit on the background.raf folder ------------------------------
 RAF_SIZE_LIMIT = 6 * 1024 * 1024  # 6 MiB (measured on console)
@@ -45,7 +52,6 @@ THEME_PATHS = {
 }
 PKG_FIXED_PATHS = {
     "sce_icon": "sce_sys/icon0.png",
-    "pic1": "sce_sys/pic1.png",
 }
 
 # --- Packaging ------------------------------------------------------------
@@ -65,6 +71,7 @@ PKG_DEFAULTS = {
     "passcode": "0" * 32,
     "content_prefix": "UP9000",
     "title_id": "CUSA00000",
+    "provider": "Paper2PS4",
 }
 
 #: Function icons, in texture/function_icon/. The file name is fixed by the
@@ -110,12 +117,17 @@ SFX_SLOTS = ("se_decide", "se_cursor", "se_cancel")
 MAX_SFX_SECONDS = 5.0
 
 #: How much audio to keep for the BGM (seconds). Themes loop menu music.
-BGM_MAX_SECONDS = 300
+#: Measured with orbis-pub-cmd's img_verify: 240 s is the longest clip whose
+#: sample count (11_520_000) it accepts. 241 s already fails with "invalid
+#: number of samples", so the music is trimmed before it is encoded.
+BGM_MAX_SECONDS = 240
 
 #: Loudness the menu music is levelled to, in LUFS. A retail theme's music
 #: sits well below a normally mastered song, which would otherwise drown out
-#: the rest of the console's sounds.
-BGM_TARGET_LUFS = -20.0
+#: the rest of the console's sounds. img_verify rejects anything louder than
+#: -31.95 LKFS for a theme's BGM (-26..-30 is a warning, -20 an error), so
+#: the target leaves a margin below that line.
+BGM_TARGET_LUFS = -32.0
 
 #: ATRAC9 bitrate that actually plays on a PS4 theme (measured).
 AT9_BITRATE = 144

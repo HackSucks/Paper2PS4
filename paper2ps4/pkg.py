@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import constants
 from . import tools
+import os
 
 
 class PackageError(RuntimeError):
@@ -59,9 +60,11 @@ def _run(label: str, args: list[str], timeout: int = 300) -> str:
     cmd = tools._windows_tool_cmd(exe) + args
     started = time.time()
     try:
+        env = os.environ.copy()
+        env["WINEDEBUG"] = "-all"
         proc = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout,
+            timeout=timeout, env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise PackageError(f"{label}: the tool hung (more than {timeout}s).") from exc
@@ -69,13 +72,37 @@ def _run(label: str, args: list[str], timeout: int = 300) -> str:
     out = proc.stdout.decode("utf-8", "replace")
     out = "\n".join(
         line for line in out.splitlines()
-        if not re.match(r"^(Fake PKG Tools|orbis-pub-cmd|Custom Patches|-|CyB1K)", line.strip())
+        if not re.match(r"^(Fake PKG Tools|orbis-pub-cmd|Custom Patches|CyB1K)", line.strip())
     )
     errors = [ln for ln in out.splitlines() if ln.strip().startswith("[Error]")]
     if errors or proc.returncode != 0:
         detail = "\n".join(e.replace("[Error]", "").strip() for e in errors)
         raise PackageError(f"{label}: {detail or f'code {proc.returncode}'}")
     return out
+
+
+def calc_loudness(path: Path) -> float | None:
+    """Measure an ATRAC9 file using orbis-pub-cmd."""
+    if orbis_cmd() is None:
+        return None
+
+    output = _run(
+        "audio loudness measurement",
+        ["file_calc_loudness", str(path)],
+    )
+
+    match = re.search(
+        r"(-?\d+(?:\.\d+)?)\s*LKFS\b",
+        output,
+        re.IGNORECASE,
+    )
+    if match is None:
+        raise PackageError(
+            "Could not parse LKFS loudness from orbis-pub-cmd output:\n"
+            + output
+        )
+
+    return float(match.group(1))
 
 
 @dataclass
@@ -85,6 +112,9 @@ class PackageMeta:
     content_id: str
     category: str = constants.PKG_DEFAULTS["category"]
     passcode: str = constants.PKG_DEFAULTS["passcode"]
+    #: The publisher name shown in the console's information screen. The
+    #: checker requires the parameter to exist; any non-empty name works.
+    provider: str = constants.PKG_DEFAULTS["provider"]
     bgm_loudness: float | None = None
 
     def validate(self) -> None:
@@ -92,6 +122,10 @@ class PackageMeta:
             raise PackageError("The title cannot be empty.")
         if len(self.title) > 128:
             raise PackageError("The title cannot exceed 128 characters.")
+        if not (self.provider or "").strip():
+            raise PackageError("The provider cannot be empty.")
+        if len(self.provider) > 128:
+            raise PackageError("The provider cannot exceed 128 characters.")
         if not TITLE_ID_RE.match(self.title_id):
             raise PackageError(
                 f"Invalid Title ID: '{self.title_id}'. Must be 4 letters and 5 digits, e.g. CUSA00000."
@@ -126,6 +160,7 @@ def build_param_sfx(meta: PackageMeta) -> str:
         f'  <param key="CATEGORY" fmt="utf8" max_len="4">{_esc(meta.category)}</param>',
         f'  <param key="CONTENT_ID" fmt="utf8" max_len="48">{_esc(meta.content_id)}</param>',
         '  <param key="FORMAT" fmt="utf8" max_len="4">obs</param>',
+        f'  <param key="PROVIDER" fmt="utf8" max_len="128">{_esc(meta.provider)}</param>',
         f'  <param key="TITLE" fmt="utf8" max_len="128">{_esc(meta.title)}</param>',
         f'  <param key="TITLE_ID" fmt="utf8" max_len="12">{_esc(meta.title_id)}</param>',
         '  <param key="VERSION" fmt="utf8" max_len="8">01.00</param>',
