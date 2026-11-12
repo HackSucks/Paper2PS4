@@ -5,9 +5,10 @@ scene that *does* animate (puppetry, particles, rain, pulsing lights, custom
 shaders) is to render it and ship the result as a frame sequence, which the
 console plays back from the RAF scene.
 
-linux-wallpaperengine renders the real thing. It needs a window, so on a
-machine without a display it runs on a private Xvfb display, and ffmpeg
-grabs the frames with x11grab. Nothing is shown to the user.
+linux-wallpaperengine renders the real thing. It needs a display, so we use:
+  - Wayland + headless monitor (GPU-accelerated, correct aspect via --scaling fill)
+    when running under a Wayland compositor that supports it (Hyprland, sway, KWin).
+  - Xvfb + ffmpeg x11grab as a fallback (software rendering, slower).
 
 The engine is looked for in this order:
 
@@ -50,11 +51,10 @@ WARMUP_SECONDS = 1.0
 #: How long to wait for the engine to report it has a rendered frame.
 READY_TIMEOUT = 120.0
 
-#: The engine renders at this rate while the frames are grabbed.
-ENGINE_FPS = 30
+#: The engine's internal render rate (frames it tries to produce per second).
+ENGINE_FPS = 60
 
-#: How often to grab the window. The engine may render more slowly than
-#: this; the duplicates are dropped afterwards.
+#: How often to grab the window when using Xvfb fallback.
 CAPTURE_FPS = 12
 
 #: The grab is done in short batches: a fast scene finishes after the first
@@ -348,17 +348,113 @@ def _pick_evenly(frames: list[Path], count: int) -> list[Path]:
     return [frames[round(index * step)] for index in range(count)]
 
 
+def _crop_and_scale_frame(src: Path, dest: Path, target_size: tuple[int, int],
+                           proj_size: tuple[int, int], fill_size: tuple[int, int],
+                           fill_offset: tuple[int, int]) -> None:
+    """Crop to fill region then scale to target size using ffmpeg.
+
+    The raw frame is at proj_size (projection resolution). We crop to the
+    fill region (fill_size at fill_offset), then scale to target_size.
+    """
+    require_tools()
+    target_width, target_height = target_size
+    proj_width, proj_height = proj_size
+    fill_width, fill_height = fill_size
+    offset_x, offset_y = fill_offset
+
+    # ffmpeg crop: crop=width:height:x:y
+    # scale: scale=target_width:target_height
+    vf = f"crop={fill_width}:{fill_height}:{offset_x}:{offset_y},scale={target_width}:{target_height}:flags=lanczos"
+    
+    cmd = [
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(src),
+        "-vf", vf,
+        "-frames:v", "1",
+        "-c:v", "png", "-pix_fmt", "rgba",
+        str(dest),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not dest.exists():
+        raise WallpaperError(f"ffmpeg crop+scale failed: {proc.stderr.strip() or 'no output'}")
+
+
+def _wayland_available() -> bool:
+    """Check if we're on a Wayland compositor that supports headless outputs."""
+    return (
+        os.environ.get("WAYLAND_DISPLAY")
+        and shutil.which("grim") is not None
+        and shutil.which("hyprctl") is not None
+    )
+
+
+def _create_headless_monitor(name: str, width: int, height: int) -> bool:
+    """Create a headless monitor on Hyprland. Returns True on success."""
+    # Position it to the right of the primary monitor to avoid overlap
+    # Using 9999x0 as a safe position that won't conflict
+    spec = f"{name},{width}x{height}@60,9999x0,1"
+    try:
+        subprocess.run(
+            ["hyprctl", "keyword", "monitor", spec],
+            capture_output=True, check=True, timeout=5
+        )
+        # Wait for monitor to appear
+        for _ in range(30):
+            result = subprocess.run(
+                ["hyprctl", "monitors"], capture_output=True, text=True, timeout=2
+            )
+            if name in result.stdout:
+                return True
+            time.sleep(0.1)
+    except Exception:
+        pass
+    return False
+
+
+def _remove_headless_monitor(name: str) -> None:
+    """Remove the headless monitor."""
+    try:
+        subprocess.run(
+            ["hyprctl", "keyword", "monitor", f"{name},remove"],
+            capture_output=True, timeout=5
+        )
+    except Exception:
+        pass
+
+
+def _capture_wayland(monitor_name: str, capture_dir: Path, count: int, fps: float) -> list[Path]:
+    """Capture frames from a Wayland monitor using grim."""
+    captured: list[Path] = []
+    frame_interval = 1.0 / fps
+    next_capture = time.monotonic()
+    
+    for i in range(count):
+        target = capture_dir / f"{i:04d}.png"
+        # Use grim with the specific monitor
+        proc = subprocess.run(
+            ["grim", "-o", monitor_name, "-t", "png", str(target)],
+            capture_output=True
+        )
+        if proc.returncode != 0 or not target.exists():
+            break
+        captured.append(target)
+        next_capture += frame_interval
+        sleep_time = next_capture - time.monotonic()
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+    
+    return captured
+
+
 def render_frames(src_dir: Path, dest_dir: Path, count: int,
                   size: tuple[int, int], wait: float,
                   *, engine: Engine | None = None,
-                  log_dir: Path | None = None) -> list[Path]:
+                  log_dir: Path | None = None) -> tuple[list[Path], float]:
     """Render `count` frames of the scene, one every `wait` seconds.
 
-    The engine runs on a private Xvfb display at `size`; ffmpeg grabs the
-    window at the final playback rate so the motion is even. Software
-    rendering can be slower than that rate, so the capture runs longer than
-    the final loop and the distinct frames are spread across it: otherwise
-    a slow scene would produce the same picture over and over.
+    Tries Wayland headless monitor first (GPU-accelerated, correct --scaling fill).
+    Falls back to Xvfb + ffmpeg x11grab (software rendering).
+    Returns frames and the actual wait time measured from capture.
     """
     if not available() and engine is None:
         raise WallpaperError(unavailable_reason() or "cannot render the scene")
@@ -370,7 +466,6 @@ def render_frames(src_dir: Path, dest_dir: Path, count: int,
 
     count = max(1, min(int(count), 48))
     width, height = size
-    playback_fps = max(1.0, 1.0 / max(0.01, wait))
     src_dir = Path(src_dir).resolve()
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -382,19 +477,180 @@ def render_frames(src_dir: Path, dest_dir: Path, count: int,
     engine_log = log_dir / "linux-wallpaperengine.log"
     ready_png = log_dir / "wpe-ready.png"
     ready_png.unlink(missing_ok=True)
+
+    # Try Wayland first
+    monitor_name = f"paper2ps4-{os.getpid()}"
+    wayland_mode = _wayland_available()
+    frames: list[Path] = []
+    actual_wait = wait
+    capture_started = time.monotonic()
+
+    if wayland_mode:
+        print(f"  [wpe] Wayland compositor detected, creating headless monitor {monitor_name} ({width}x{height})")
+        if _create_headless_monitor(monitor_name, width, height):
+            try:
+                frames, actual_wait = _render_wayland(
+                    engine, src_dir, dest_dir, count, size, wait_seconds, monitor_name,
+                    engine_log, ready_png, log_dir, capture_started
+                )
+            finally:
+                _remove_headless_monitor(monitor_name)
+
+    # Fallback to Xvfb
+    if not frames:
+        if wayland_mode:
+            print("  [wpe] Wayland capture failed, falling back to Xvfb")
+        frames, actual_wait = _render_xvfb(
+            engine, src_dir, dest_dir, count, size, wait,
+            engine_log, ready_png, log_dir, capture_started
+        )
+
+    print(f"  [wpe] {len(frames)} frame(s) captured, actual wait {actual_wait:.3f}s ({1/actual_wait:.1f} fps)")
+    return frames, actual_wait
+
+
+def _render_wayland(engine: Engine, src_dir: Path, dest_dir: Path, count: int,
+                    size: tuple[int, int], wait: float, monitor_name: str,
+                    engine_log: Path, ready_png: Path, log_dir: Path,
+                    capture_started: float) -> tuple[list[Path], float]:
+    """Render using Wayland headless monitor with grim capture."""
+    width, height = size
+    wpe = None
     capture_dir = dest_dir / ".capture"
     if capture_dir.exists():
         shutil.rmtree(capture_dir)
     capture_dir.mkdir()
 
-    # Capture in short batches and stop as soon as enough distinct frames
-    # exist. A fast scene needs one batch; a heavy one under software
-    # rendering keeps going until the deadline.
-    chunk_count = max(4, int(round(CAPTURE_FPS * CAPTURE_CHUNK_SECONDS)))
-    capture_started = time.monotonic()
-    captured: list[Path] = []
-    chunk_index = 0
-    unique: list[Path] = []
+    env = os.environ.copy()
+    env["XDG_SESSION_TYPE"] = "wayland"
+    env["WAYLAND_DISPLAY"] = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+    library = str(engine.root)
+    current = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = library + (":" + current if current else "")
+
+    # Use --scaling fill to correctly handle the scene's aspect ratio
+    command = [
+        str(engine.executable),
+        "--screen-root", monitor_name,
+        "--bg", str(src_dir),
+        "--scaling", "fill",
+        "--fps", str(ENGINE_FPS),
+        "--silent",
+        "--disable-mouse",
+        "--disable-parallax",
+        "--assets-dir", str(engine.assets),
+        "--screenshot", str(ready_png),
+        "--screenshot-delay", str(ENGINE_FPS // 2),
+    ]
+    with open(engine_log, "wb") as log:
+        wpe = subprocess.Popen(
+            command, cwd=str(engine.root), env=env,
+            stdout=log, stderr=subprocess.STDOUT,
+        )
+
+    # Wait for ready screenshot
+    def ready_check():
+        return ready_png.is_file() and ready_png.stat().st_size > 0 or wpe.poll() is not None
+
+    ready = _wait_for(ready_check, READY_TIMEOUT)
+    if wpe.poll() is not None:
+        raise WallpaperError(
+            "linux-wallpaperengine exited before rendering. "
+            + (_tail(engine_log) or ""))
+    if not ready:
+        raise WallpaperError(
+            f"... no frame after {READY_TIMEOUT:.0f}s. "
+            + (_tail(engine_log) or ""))
+
+    # Warmup
+    time.sleep(WARMUP_SECONDS)
+
+    # Capture at target rate - we want 'count' frames over the scene's natural loop time
+    # Use a slightly higher capture rate to ensure we get enough distinct frames
+    capture_fps = max(30.0, 1.0 / max(0.01, wait) * 2)
+    captured = _capture_wayland(monitor_name, capture_dir, count * 2, capture_fps)
+    _terminate(wpe)
+
+    if not captured:
+        raise WallpaperError("grim captured no frames.")
+
+    unique = _unique_frames(captured)
+    if len(unique) < 2:
+        raise WallpaperError("not enough distinct frames captured")
+
+    # Measure actual scene time from first to last distinct frame
+    capture_duration = time.monotonic() - capture_started
+    actual_wait = capture_duration / (len(unique) - 1)
+
+    # Pick evenly spaced frames
+    chosen = _pick_evenly(unique[:count], count)
+    frames = []
+    for index, frame in enumerate(chosen):
+        target = dest_dir / f"{index:02d}.png"
+        shutil.copyfile(frame, target)
+        frames.append(target)
+
+    shutil.rmtree(capture_dir, ignore_errors=True)
+    return frames, actual_wait
+
+
+def _read_scene_projection(src_dir: Path) -> tuple[int, int] | None:
+    """Read the orthogonalprojection from scene.json if present."""
+    import json
+    scene_json = src_dir / "scene.json"
+    if not scene_json.is_file():
+        return None
+    try:
+        data = json.loads(scene_json.read_text(encoding="utf-8", errors="replace"))
+        proj = data.get("general", {}).get("orthogonalprojection", {})
+        if proj and "width" in proj and "height" in proj:
+            return int(proj["width"]), int(proj["height"])
+    except Exception:
+        pass
+    return None
+
+
+def _render_xvfb(engine: Engine, src_dir: Path, dest_dir: Path, count: int,
+                 size: tuple[int, int], wait: float,
+                 engine_log: Path, ready_png: Path, log_dir: Path,
+                 capture_started: float) -> tuple[list[Path], float]:
+    """Render using Xvfb + ffmpeg x11grab (software rendering fallback).
+
+    To correctly emulate --scaling fill (which the engine only supports for
+    --screen-root), we render at a resolution with the same aspect ratio as
+    the scene's projection, so DefaultUVs = StretchUVs (full projection visible).
+    We use a reduced resolution (max ~1.5MP) for llvmpipe performance, then
+    crop to the fill region (16:9 at full projection height) and scale to target.
+    """
+    target_width, target_height = size
+    
+    # Read scene projection to compute correct fill region
+    proj = _read_scene_projection(src_dir)
+    if proj:
+        proj_width, proj_height = proj
+    else:
+        # Fallback: common Wallpaper Engine default
+        proj_width, proj_height = 3440, 1440
+    
+    # Fill region in projection coordinates: 16:9 crop at full height, centered
+    fill_height = proj_height
+    fill_width = int(fill_height * 16 / 9)
+    fill_x_offset = max(0, (proj_width - fill_width) // 2)
+    
+    # Render at a resolution with the SAME ASPECT RATIO as the projection,
+    # so DefaultUVs = StretchUVs (shows full projection). Cap at ~1.5MP for speed.
+    proj_aspect = proj_width / proj_height
+    max_render_pixels = 1_500_000  # ~1.5MP for reasonable llvmpipe speed
+    render_height = int((max_render_pixels / proj_aspect) ** 0.5)
+    render_height = min(render_height, proj_height)  # don't upscale
+    render_height = max(render_height, 720)  # minimum for quality
+    render_width = int(render_height * proj_aspect)
+
+    playback_fps = max(1.0, 1.0 / max(0.01, wait))
+    capture_dir = dest_dir / ".capture"
+    if capture_dir.exists():
+        shutil.rmtree(capture_dir)
+    capture_dir.mkdir()
 
     xvfb = None
     wpe = None
@@ -403,7 +659,7 @@ def render_frames(src_dir: Path, dest_dir: Path, count: int,
 
     try:
         xvfb = subprocess.Popen(
-            ["Xvfb", display_name, "-screen", "0", f"{width}x{height}x24",
+            ["Xvfb", display_name, "-screen", "0", f"{render_width}x{render_height}x24",
              "-nolisten", "tcp"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -424,7 +680,7 @@ def render_frames(src_dir: Path, dest_dir: Path, count: int,
 
         command = [
             str(engine.executable),
-            "--window", f"0x0x{width}x{height}",
+            "--window", f"0x0x{render_width}x{render_height}",
             "--fps", str(ENGINE_FPS),
             "--silent",
             "--disable-mouse",
@@ -454,16 +710,19 @@ def render_frames(src_dir: Path, dest_dir: Path, count: int,
                 f"... no frame after {READY_TIMEOUT:.0f}s. "
                 + (_tail(engine_log) or ""))
 
-        # The screenshot means the window exists; give the scene a moment to
-        # animate away from its initial state.
         time.sleep(WARMUP_SECONDS)
+
+        chunk_count = max(4, int(round(CAPTURE_FPS * CAPTURE_CHUNK_SECONDS)))
+        captured: list[Path] = []
+        chunk_index = 0
+        unique: list[Path] = []
 
         while True:
             cmd = [
                 FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
                 "-f", "x11grab", "-draw_mouse", "0",
                 "-framerate", f"{CAPTURE_FPS:.6f}",
-                "-video_size", f"{width}x{height}",
+                "-video_size", f"{render_width}x{render_height}",
                 "-i", display_name,
                 "-frames:v", str(chunk_count),
                 str(capture_dir / f"{chunk_index:03d}_%04d.png"),
@@ -485,18 +744,33 @@ def render_frames(src_dir: Path, dest_dir: Path, count: int,
                     or time.monotonic() - capture_started >= MAX_CAPTURE_SECONDS):
                 break
 
-        chosen = _pick_evenly(unique, count)
+        _terminate(wpe)
 
+        actual_wait = wait
+        if len(unique) >= 2:
+            capture_duration = time.monotonic() - capture_started
+            actual_wait = capture_duration / (len(unique) - 1)
+
+        chosen = _pick_evenly(unique, count)
         frames: list[Path] = []
+        # Compute fill region in render coordinates (scaled from projection)
+        scale = render_width / proj_width
+        render_fill_width = int(fill_width * scale)
+        render_fill_height = int(fill_height * scale)
+        render_fill_x = int(fill_x_offset * scale)
+        
         for index, frame in enumerate(chosen):
             target = dest_dir / f"{index:02d}.png"
-            shutil.copyfile(frame, target)
+            _crop_and_scale_frame(
+                frame, target, (target_width, target_height),
+                (render_width, render_height),  # source (render) size
+                (render_fill_width, render_fill_height),  # crop size
+                (render_fill_x, 0)  # crop offset
+            )
             frames.append(target)
-        # index.xml and the console expect consecutive names; a scene with
-        # fewer distinct frames than asked for still plays, just faster.
-        print(f"  [wpe] {len(unique)} distinct frame(s) captured, "
-              f"{len(frames)} used")
-        return frames
+
+        shutil.rmtree(capture_dir, ignore_errors=True)
+        return frames, actual_wait
 
     finally:
         if wpe is not None:

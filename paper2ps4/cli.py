@@ -246,10 +246,11 @@ def convert(project_dir: Path, out_fpkg: Path, *,
               f"{1.0 / wait_seconds:.1f} fps "
               f"(console budget={budget})")
         try:
-            frame_pngs = wallpaper.render_frames(
+            frame_pngs, actual_wait = wallpaper.render_frames(
                 work_src, work_assets / "frames", count, animated_size,
                 wait_seconds, engine=engine, log_dir=work_assets,
             )
+            wait_seconds = actual_wait
         except wallpaper.WallpaperError as exc:
             print(f"    [!] scene rendering failed: {exc}")
             if videos:
